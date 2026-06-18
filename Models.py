@@ -635,12 +635,16 @@ class Model:
                     for name, compartment in self.compartments.items()
                     for p in compartment.parameter_names
                 ]
-
+    @property
     def _get_compartments(self):
-        for name, compartment in self.compartments.items():
-            print(f"{name}: {type(compartment).__name__}")
+        return [
+            (name, type(compartment).__name__)
+            for name, compartment in self.compartments.items()
+        ]
+
+    @property
     def _get_parameter_names(self):
-        print(self.parameter_list)
+        return self.parameter_list
 
     def _delete_compartment(self, name):
     
