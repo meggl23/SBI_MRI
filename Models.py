@@ -28,6 +28,13 @@ class Compartment(ABC):
     @abstractmethod
     def build_parameter_list(self):
         pass
+
+    @staticmethod
+    def _check_range(name, min_val, max_val):
+        if min_val > max_val:
+            raise ValueError(
+                f"{name}: minimum ({min_val}) must not exceed maximum ({max_val})."
+            )    
         
     def sample_and_simulate_parallel(self, N=1, n_jobs=-1, chunk_size=1000):
         params = self.sample(N)
@@ -52,6 +59,10 @@ class DTI(Compartment):
         super().__init__(gtab)
         self.MD_range = [MD_min,MD_max]
         self.FA_range = [FA_min,FA_max]
+
+        self._check_range("MD", MD_min, MD_max)
+        self._check_range("FA", FA_min, FA_max)
+
         self.DTI_gen_max_tries = 10000
 
         self.build_parameter_list()
@@ -163,12 +174,13 @@ class DTI(Compartment):
 #----------------Stick Compartment---------------------
 class Sticks(Compartment):
     def __init__(self,gtab, D_par_min = 0, D_par_max = 5e-3, D_perp_min = 0,D_perp_max = 5e-3,
-                Dispersion=False,Size = 'Distribution'):
+                Dispersion=False,kappa_min = 0, kappa_max = 10,Size = 'Distribution',size_min=1e-4,size_max=0.005):
         super().__init__(gtab)
 
         self.D_par_range  = [D_par_min,D_par_max]
+        self._check_range("D_par", D_par_min, D_par_max)
         self.D_perp_range = [D_perp_min,D_perp_max]
-        
+        self._check_range("D_perp", D_perp_min, D_perp_max)
         self.dispersion = False
         self.size  = Size
 
@@ -180,14 +192,14 @@ class Sticks(Compartment):
             )
 
         if Dispersion:
-            self.kappa_range = [0,10]
+            self.kappa_range = [kappa_min,kappa_max]
+            self._check_range("kappa", kappa_min, kappa_max)
             self.dispersion  = True
         if Size == 'Infer':
             if len(np.unique(self.gtab.small_delta))  < 2:
                 print('*****WARNING: You are trying to fit size with only 1 diffusion time - proceed with caution!*****')
-            size_min = 1e-4
-            size_max = 0.005
             self.size_range = [size_min,size_max]
+            self._check_range("size", size_min, size_max)
             
         n_roots = 15
         self.Bessel_roots = np.array(self.j1prime_zeros(n_roots, x_max=10e6, step=0.01))
@@ -434,10 +446,11 @@ class Sticks(Compartment):
 
 #----------------Ball Compartment---------------------
 class Balls(Compartment):
-    def __init__(self,gtab,D_sph_min=0,D_sph_max=5e-3,Size='Infer'):
+    def __init__(self,gtab,D_sph_min=0,D_sph_max=5e-3,Size='Infer',size_min=1e-3,size_max=20e-3):
         super().__init__(gtab)
 
         self.D_sph_range  = [D_sph_min,D_sph_max]
+        self._check_range("D_sph", D_sph_min, D_sph_max)
         self.size  = Size
 
         allowed = {"Infer", "Distribution", "Single"}
@@ -450,9 +463,8 @@ class Balls(Compartment):
         if Size == 'Infer':
             if len(np.unique(self.gtab.small_delta))  < 2:
                 print('*****WARNING: You are trying to fit size with only 1 diffusion time - proceed with caution!*****')
-            size_min = 1e-3
-            size_max = 20e-3
             self.size_range = [size_min,size_max]
+            self._check_range("size", size_min, size_max)
 
         self.sph_bessel_roots = np.array(self.j1prime_zeros_spherical(20, x_max=10e6, step=0.01))
         
@@ -684,8 +696,11 @@ class Model:
         
         if snr is None:
             return Params, S
+
+        S = self._add_noise(S, snr)
+        S = self._normalize(S)
             
-        return  Params, self._add_noise(S, snr)
+        return  Params, S
 
     def _add_noise(self, S, snr):
         sigma = 1.0 / snr
@@ -694,3 +709,14 @@ class Model:
         noise2 = np.random.normal(0, sigma, size=S.shape)
     
         return np.sqrt((S + noise1)**2 + noise2**2)
+
+    def _normalize(self, S):
+
+        b0_mask = self.gtab.bvals == 0
+
+        if not np.any(b0_mask):
+            raise ValueError("Cannot normalize: no b=0 measurements found.")
+
+        S0 = S[:, b0_mask].mean(axis=1, keepdims=True)
+
+        return S / S0
