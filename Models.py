@@ -1,11 +1,15 @@
 from abc import ABC, abstractmethod
 from joblib import Parallel, delayed
 
-import numpy as np
 from scipy.special import j0, jv
 from scipy.special import spherical_jn
 from scipy.optimize import bisect
 from scipy.stats import poisson
+import numpy as np
+
+import Helpers
+
+import tqdm
 
 #----------------Generic Compartment---------------------
 class Compartment(ABC):
@@ -13,15 +17,18 @@ class Compartment(ABC):
         self.gtab = gtab
     
     @abstractmethod
-    def simulation(self):
+    def simulation(self,params):
         pass
 
     @abstractmethod
-    def sample(self):
+    def sample(self,N=1,rng = None):
         pass
         
-    def sample_and_simulate(self, N=1):
-        params = self.sample(N)
+    def sample_and_simulate(self, N=1, rng = None):
+        if rng is None:
+            rng = np.random.default_rng()
+
+        params = self.sample(N,rng = rng)
         signals = self.simulation(params)
         return params, signals
         
@@ -36,8 +43,11 @@ class Compartment(ABC):
                 f"{name}: minimum ({min_val}) must not exceed maximum ({max_val})."
             )    
         
-    def sample_and_simulate_parallel(self, N=1, n_jobs=-1, chunk_size=1000):
-        params = self.sample(N)
+    def sample_and_simulate_parallel(self, N=1, n_jobs=-1, chunk_size=1000,rng = None):
+        if rng is None:
+            rng = np.random.default_rng()
+
+        params = self.sample(N,rng = rng)
     
         chunks = [
             params[i:i + chunk_size]
@@ -80,15 +90,19 @@ class DTI(Compartment):
     
         return np.exp(-bvals[None, :] * adc)
         
-    def sample(self, N=1):
-        MD_samples = np.random.uniform(*self.MD_range, size=N)
-        FA_samples = np.random.uniform(*self.FA_range, size=N)
-    
+    def sample(self, N=1, rng=None):
+        if rng is None:
+            rng = np.random.default_rng()
+
+        MD_samples = rng.uniform(*self.MD_range, size=N)
+
+        FA_samples = rng.uniform(*self.FA_range, size=N)
+
         tensors = np.array([
-            self.tens_to_flat(self.random_diffusion_tensor(md, fa))
+            self.tens_to_flat(self.random_diffusion_tensor(md, fa, rng))
             for md, fa in zip(MD_samples, FA_samples)
         ])
-    
+
         return tensors
 
     def build_parameter_list(self):
@@ -113,7 +127,7 @@ class DTI(Compartment):
             tensor[2, 2],
         ])
 
-    def random_diffusion_tensor(self,MD, FA):
+    def random_diffusion_tensor(self,MD, FA,rng):
         if MD <= 0:
             raise ValueError("MD must be positive")
     
@@ -123,7 +137,7 @@ class DTI(Compartment):
         X = (3 * FA**2 * MD**2) / (1.5 - FA**2)
     
         for _ in range(self.DTI_gen_max_tries):
-            theta = np.random.uniform(0, 2 * np.pi)
+            theta = rng.uniform(0, 2 * np.pi)
     
             a = np.sqrt(X / 6) * np.cos(theta)
             b = np.sqrt(X / 2) * np.sin(theta)
@@ -135,13 +149,14 @@ class DTI(Compartment):
             lambdas = np.array([l1, l2, l3])
     
             if np.all(lambdas > 0):
-                Q = self.random_SO3()
+                Q = self.random_SO3(rng)
                 return Q @ np.diag(lambdas) @ Q.T
     
         raise RuntimeError("Could not generate positive eigenvalues")
     
-    def random_SO3(self):
-        M = np.random.normal(size=(3, 3))
+    @staticmethod
+    def random_SO3(rng):
+        M = rng.normal(size=(3, 3))
         Q, R = np.linalg.qr(M)
     
         # make Q uniformly distributed over SO(3)
@@ -196,7 +211,7 @@ class Sticks(Compartment):
             self._check_range("kappa", kappa_min, kappa_max)
             self.dispersion  = True
         if Size == 'Infer':
-            if len(np.unique(self.gtab.small_delta))  < 2:
+            if len(np.unique(self.gtab.big_delta))  < 2:
                 print('*****WARNING: You are trying to fit size with only 1 diffusion time - proceed with caution!*****')
             self.size_range = [size_min,size_max]
             self._check_range("size", size_min, size_max)
@@ -253,24 +268,27 @@ class Sticks(Compartment):
         
         return zeros
 
-    def sample(self,N):
+    def sample(self,N,rng = None):
         
-        D_par_samples = np.random.uniform(*self.D_par_range, size=N)
-        D_perp_samples = np.random.uniform(*self.D_perp_range, size=N)
+        if rng is None:
+            rng = np.random.default_rng()
+
+        D_par_samples = rng.uniform(*self.D_par_range, size=N)
+        D_perp_samples = rng.uniform(*self.D_perp_range, size=N)
 
 
-        V = np.random.randn(N, 3)
+        V = rng.standard_normal((N, 3))
         V /= np.linalg.norm(V, axis=1, keepdims=True)
         Angs = np.array([self.SpherAng(v) for v in V])
 
         params = np.column_stack([Angs,D_par_samples,D_perp_samples])
         
         if(self.dispersion):
-            kappa_samples = np.random.uniform(*self.kappa_range, size=N)
+            kappa_samples = rng.uniform(*self.kappa_range, size=N)
             params = np.column_stack([params, kappa_samples])
 
         if(self.size == 'Infer'):
-            size_samples = np.random.uniform(*self.size_range, size=N)
+            size_samples = rng.uniform(*self.size_range, size=N)
             params = np.column_stack([params, size_samples])
         return params
 
@@ -461,7 +479,7 @@ class Balls(Compartment):
             )
 
         if Size == 'Infer':
-            if len(np.unique(self.gtab.small_delta))  < 2:
+            if len(np.unique(self.gtab.big_delta))  < 2:
                 print('*****WARNING: You are trying to fit size with only 1 diffusion time - proceed with caution!*****')
             self.size_range = [size_min,size_max]
             self._check_range("size", size_min, size_max)
@@ -475,12 +493,15 @@ class Balls(Compartment):
         if(self.size == 'Infer'): self.parameter_names.append('size')
 
 
-    def sample(self,N):
+    def sample(self,N, rng = None):
+
+        if rng is None:
+            rng = np.random.default_rng()
         
-        D_sph_samples = np.random.uniform(*self.D_sph_range, size=N)
+        D_sph_samples = rng.uniform(*self.D_sph_range, size=N)
         params = np.copy(D_sph_samples)
         if(self.size == 'Infer'):
-            size_samples = np.random.uniform(*self.size_range, size=N)
+            size_samples = rng.uniform(*self.size_range, size=N)
             params = np.column_stack([D_sph_samples, size_samples])
         return params
     
@@ -603,7 +624,7 @@ class FreeWater(Compartment):
     def build_parameter_list(self):
         self.parameter_names = []
 
-    def sample(self, N):
+    def sample(self, N,rng = None):
         return np.empty((N, 0))
 
     def simulation(self, params):
@@ -669,44 +690,50 @@ class Model:
             for name, compartment in self.compartments.items()
             for p in compartment.parameter_names
         ]
-    def simulation(self,N,custom_snr=None,parallel=False):
+    def simulation(self,N,custom_snr=None,parallel=False,Save = True,filename = None,rng = None):
+        if rng is None:
+            rng = np.random.default_rng()
         if len(self.compartments) == 0:
             raise ValueError(f"Need at least one compartment!")
     
         n_meas = len(self.gtab.bvals)
         n_comp = len(self.compartments)
         
-        S = np.zeros((N, n_meas))
-        fracs = np.random.dirichlet(alpha=np.ones(n_comp), size=N)
+        S_raw = np.zeros((N, n_meas))
+        fracs = rng.dirichlet(alpha=np.ones(n_comp), size=N)
         all_params = [fracs]
 
         if(parallel):
-            for i, compartment in enumerate(self.compartments.values()):
-                params, c_sim = compartment.sample_and_simulate_parallel(N)
+            for i, compartment in tqdm.tqdm(enumerate(self.compartments.values()),position=0,desc="Simulating compartments"):
+                params, c_sim = compartment.sample_and_simulate_parallel(N,rng=rng)
                 all_params.append(params)
-                S += fracs[:, i, None] * c_sim
+                S_raw += fracs[:, i, None] * c_sim
         else:
-            for i, compartment in enumerate(self.compartments.values()):
-                params, c_sim = compartment.sample_and_simulate(N)
+            for i, compartment in tqdm.tqdm(enumerate(self.compartments.values()),position=0,desc="Simulating compartments"):
+                params, c_sim = compartment.sample_and_simulate(N,rng=rng)
                 all_params.append(params)
-                S += fracs[:, i, None] * c_sim
+                S_raw += fracs[:, i, None] * c_sim
 
         Params = np.hstack(all_params)
         snr = self.snr if custom_snr is None else custom_snr
         
         if snr is None:
-            return Params, S
+            S = S_raw
+        else:
+            S = self._add_noise(S_raw, snr,rng)
+            S = self._normalize(S)
+        
+        if Save: Helpers.save_h5(filename, Params, S, S_raw, snr,self.parameter_list,self.compartments)
 
-        S = self._add_noise(S, snr)
-        S = self._normalize(S)
-            
         return  Params, S
 
-    def _add_noise(self, S, snr):
+    def _add_noise(self, S, snr,rng):
+        if rng is None:
+            rng = np.random.default_rng()
         sigma = 1.0 / snr
     
-        noise1 = np.random.normal(0, sigma, size=S.shape)
-        noise2 = np.random.normal(0, sigma, size=S.shape)
+        noise1 = rng.normal(0, sigma, size=S.shape)
+        noise2 = rng.normal(0, sigma, size=S.shape)
     
         return np.sqrt((S + noise1)**2 + noise2**2)
 
