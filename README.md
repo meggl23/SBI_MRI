@@ -1,0 +1,1 @@
+Very very preliminary version of the SBI + dwMRI package. It "works" but it still needs a lot of work - so please use carefully. I will change this when im comfortable with this code being used more seriously.
