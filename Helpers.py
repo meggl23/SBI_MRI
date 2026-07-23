@@ -107,3 +107,16 @@ def load_posterior(filename):
         output = f["posterior"][:]
 
     return output
+
+
+
+def get_parameter_index(parameter_list, name):
+    matches = np.flatnonzero(parameter_list == name)
+
+    if len(matches) == 0:
+        raise ValueError(f"Parameter {name} was not found.")
+
+    if len(matches) > 1:
+        raise ValueError(f"Parameter {name} appears multiple times.")
+
+    return matches[0]

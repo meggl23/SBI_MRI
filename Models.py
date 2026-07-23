@@ -76,9 +76,13 @@ class DTI(Compartment):
         self.DTI_gen_max_tries = 10000
 
         self.build_parameter_list()
+
+        self.clip = True
     
-    def simulation(self, tensors):
-        tensors = np.asarray([self.flat_to_tens(t) for t in tensors])
+    def simulation(self, tensors, clip = True):
+        if(self.clip):
+            tensors = np.array([DTI.clip_negative_eigenvalues(t) for t in tensors])
+        tensors = np.asarray([DTI.flat_to_tens(t) for t in tensors])
     
         if tensors.shape[1:] != (3, 3):
             raise ValueError("tensors must have shape (N, 3, 3)")
@@ -99,16 +103,23 @@ class DTI(Compartment):
         FA_samples = rng.uniform(*self.FA_range, size=N)
 
         tensors = np.array([
-            self.tens_to_flat(self.random_diffusion_tensor(md, fa, rng))
+            DTI.tens_to_flat(self.random_diffusion_tensor(md, fa, rng))
             for md, fa in zip(MD_samples, FA_samples)
         ])
 
+        if(self.clip):
+            tensors = np.array([DTI.clip_negative_eigenvalues(t) for t in tensors])
+
         return tensors
+
+    def set_MD_FA_priors(self):
+        return NotImplemented
 
     def build_parameter_list(self):
         self.parameter_names = ['D_xx','D_xy','D_yy','D_xz','D_yz','D_zz']
 
-    def flat_to_tens(self, flat_tensor):
+    @staticmethod
+    def flat_to_tens(flat_tensor):
         xx, xy, yy, xz, yz, zz = flat_tensor
     
         return np.array([
@@ -117,7 +128,8 @@ class DTI(Compartment):
             [xz, yz, zz],
         ])
     
-    def tens_to_flat(self, tensor):
+    @staticmethod
+    def tens_to_flat(tensor):
         return np.array([
             tensor[0, 0],
             tensor[0, 1],
@@ -126,6 +138,35 @@ class DTI(Compartment):
             tensor[1, 2],
             tensor[2, 2],
         ])
+
+    @staticmethod
+    def clip_negative_eigenvalues(tensor):
+        tensor = np.asarray(tensor)
+
+        is_flat = tensor.shape == (6,)
+
+        if is_flat:
+            matrix = DTI.flat_to_tens(tensor)
+        else:
+            matrix = tensor
+
+        # Symmetric eigendecomposition
+        eigenvalues, eigenvectors = np.linalg.eigh(matrix)
+
+        # Clip eigenvalues
+        clipped_eigenvalues = np.maximum(eigenvalues, 1e-5)
+
+        # Reconstruct matrix
+        clipped_matrix = (
+            eigenvectors
+            @ np.diag(clipped_eigenvalues)
+            @ eigenvectors.T
+        )
+
+        if is_flat:
+            return DTI.tens_to_flat(clipped_matrix)
+
+        return clipped_matrix
 
     def random_diffusion_tensor(self,MD, FA,rng):
         if MD <= 0:
@@ -167,24 +208,49 @@ class DTI(Compartment):
     
         return Q
 
-    def MD_FA(self,tensor, clip_negative=False, eps=1e-5):
-        evals = np.linalg.eigvalsh(tensor)
-    
+    @staticmethod
+    def MD_FA(tensors, clip_negative=False, eps=1e-5):
+        tensors = np.asarray(tensors)
+
+        # Convert a single tensor into a batch of one.
+        if tensors.shape == (6,):
+            tensors = tensors[np.newaxis, :]
+
+        elif tensors.shape == (3, 3):
+            tensors = tensors[np.newaxis, :, :]
+
+        # Unflatten a batch with shape (N, 6).
+        if tensors.ndim == 2 and tensors.shape[1] == 6:
+            tensors = np.array([
+                DTI.flat_to_tens(flat_tensor)
+                for flat_tensor in tensors
+            ])
+
+        # Validate the final tensor shape.
+        if tensors.ndim != 3 or tensors.shape[1:] != (3, 3):
+            raise ValueError(
+                "Expected shape (6,), (3, 3), (N, 6), or (N, 3, 3)."
+            )
+
+        # np.linalg.eigvalsh supports a batch of matrices.
+        evals = np.linalg.eigvalsh(tensors)
+
         if clip_negative:
             evals = np.maximum(evals, eps)
-    
-        MD = evals.mean()
-    
-        denom = np.sum(evals**2)
-        if denom == 0:
-            return MD, 0.0
-    
-        FA = np.sqrt(
-            3 * np.sum((evals - MD)**2)
-            / (2 * denom)
+
+        MD = np.mean(evals, axis=1)
+
+        denom = np.sum(evals**2, axis=1)
+        numer = 3 * np.sum((evals - MD[:, np.newaxis])**2, axis=1)
+
+        FA = np.zeros_like(MD, dtype=float)
+
+        nonzero = denom > 0
+        FA[nonzero] = np.sqrt(
+            numer[nonzero] / (2 * denom[nonzero])
         )
-    
-        return [MD, FA]
+
+        return np.stack((MD, FA))
 
 #----------------Stick Compartment---------------------
 class Sticks(Compartment):
@@ -690,7 +756,35 @@ class Model:
             for name, compartment in self.compartments.items()
             for p in compartment.parameter_names
         ]
-    def simulation(self,N,custom_snr=None,parallel=False,Save = True,filename = None,rng = None):
+
+    def simulation(self,parameters,parameter_list = None,custom_snr = None,rng = None):
+
+
+        if parameter_list is None: parameter_list = self.parameter_list
+        N = parameters.shape[0]
+        n_meas = len(self.gtab.bvals)
+        S = np.zeros((N, n_meas))
+
+        parameter_list = np.asarray(parameter_list)
+        for key, value in self.compartments.items():
+            rel_pars = [
+                Helpers.get_parameter_index(parameter_list, f"{key}_{name}")
+                for name in value.parameter_names
+            ]
+            
+            rel_frac = Helpers.get_parameter_index(parameter_list, f"{key}_f")
+            S += parameters[:,rel_frac,None]*value.simulation(parameters[:,rel_pars])
+        if rng is None:
+            rng = np.random.default_rng()
+        snr = self.snr if custom_snr is None else custom_snr
+
+        if snr is not None:
+            S = self._add_noise(S, snr,rng)
+            S = self._normalize(S)
+
+        return S
+
+    def sample_and_simulation(self,N,custom_snr=None,parallel=False,Save = True,filename = None,rng = None):
         if rng is None:
             rng = np.random.default_rng()
         if len(self.compartments) == 0:

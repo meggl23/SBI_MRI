@@ -6,14 +6,14 @@ import tqdm
 import Helpers
 
 
-def Train_Network(Par,Obs):
+def Train_Network(Par,Obs , **kwargs):
     inference = SNPE()
     inference = inference.append_simulations(Par, Obs)
-    density_estimator = inference.train() 
+    density_estimator = inference.train(**kwargs) 
     NPE_Network = inference.build_posterior(density_estimator)
     return NPE_Network
 
-def Train_Network_gpu(Par,Obs,batch_size=512):
+def Train_Network_gpu(Par,Obs,batch_size=512, **kwargs):
     if torch.cuda.is_available():
         device = 'cuda'
     elif torch.backends.mps.is_available():
@@ -24,7 +24,7 @@ def Train_Network_gpu(Par,Obs,batch_size=512):
 
     inference = SNPE(device=device)
     inference = inference.append_simulations(Par, Obs)
-    density_estimator = inference.train(training_batch_size = batch_size) 
+    density_estimator = inference.train(training_batch_size = batch_size,**kwargs) 
     NPE_Network = inference.build_posterior(density_estimator)
     NPE_Network.to(device='cpu')
         
