@@ -784,7 +784,7 @@ class Model:
 
         return S
 
-    def sample_and_simulation(self,N,custom_snr=None,parallel=False,Save = True,filename = None,rng = None):
+    def sample_and_simulation(self,N,custom_snr=None,parallel=False,Save = True,filename = None,rng = None, n_jobs = -1):
         if rng is None:
             rng = np.random.default_rng()
         if len(self.compartments) == 0:
@@ -799,7 +799,7 @@ class Model:
 
         if(parallel):
             for i, compartment in tqdm.tqdm(enumerate(self.compartments.values()),position=0,desc="Simulating compartments"):
-                params, c_sim = compartment.sample_and_simulate_parallel(N,rng=rng)
+                params, c_sim = compartment.sample_and_simulate_parallel(N,rng=rng,n_jobs=n_jobs)
                 all_params.append(params)
                 S_raw += fracs[:, i, None] * c_sim
         else:
