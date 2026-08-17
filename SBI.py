@@ -53,7 +53,7 @@ def Infer(Network,Obs,samples=500,batch_size=32):
 
     return p_samples
 
-def InferFromVolume(Network,Obs,Mask,batch_size = 32, return_dist = False, filename = None,):
+def InferFromVolume(Network,Obs,mask,batch_size = 32, return_dist = False, filename = None,):
     Obs_mask = Obs[mask]                     
     Obs_mask = torch.from_numpy(Obs_mask).float()
     print('Starting inference....')
