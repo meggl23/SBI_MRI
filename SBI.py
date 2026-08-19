@@ -2,18 +2,80 @@
 from sbi.inference import SNPE
 import torch
 import tqdm
+import numpy as np
 
 import Helpers
 
 
-def Train_Network(Par,Obs , **kwargs):
+def Train_Network(Par, Obs, **kwargs):
+    """
+    Train a neural posterior estimator using simulation-based inference.
+
+    The supplied parameter and observation pairs are appended to an SNPE
+    inference object, which is then trained to estimate the posterior
+    distribution. The trained density estimator is converted into a posterior
+    object that can subsequently be used for inference.
+
+    Parameters
+    ----------
+    Par : torch.Tensor
+        Simulated model parameters used for training. The first dimension
+        corresponds to simulation samples.
+
+    Obs : torch.Tensor
+        Simulated observations corresponding to ``Par``.
+
+    **kwargs
+        Additional keyword arguments passed directly to ``SNPE.train``.
+
+    Returns
+    -------
+    NPE_Network : object
+        Trained posterior object created by ``SNPE.build_posterior``.
+    """
     inference = SNPE()
     inference = inference.append_simulations(Par, Obs)
     density_estimator = inference.train(**kwargs) 
     NPE_Network = inference.build_posterior(density_estimator)
     return NPE_Network
 
-def Train_Network_gpu(Par,Obs,batch_size=512, **kwargs):
+def Train_Network_gpu(Par, Obs, batch_size=512, **kwargs):
+    """
+    Train a neural posterior estimator using available GPU acceleration.
+
+    CUDA is used when available. If CUDA is unavailable but Apple's MPS
+    backend is available, MPS is used instead. If no supported GPU backend is
+    found, the function falls back to ``Train_Network`` on the CPU.
+
+    After training, the resulting posterior network is moved back to the CPU
+    before being returned.
+
+    Parameters
+    ----------
+    Par : torch.Tensor
+        Simulated model parameters used for training.
+
+    Obs : torch.Tensor
+        Simulated observations corresponding to ``Par``.
+
+    batch_size : int, optional
+        Training batch size passed to ``SNPE.train`` as
+        ``training_batch_size``. Default is 512.
+
+    **kwargs
+        Additional keyword arguments passed directly to ``SNPE.train``.
+
+    Returns
+    -------
+    NPE_Network : object
+        Trained posterior object created by ``SNPE.build_posterior`` and moved
+        to the CPU before being returned.
+
+    Notes
+    -----
+    Device selection follows the priority order CUDA, MPS, then CPU.
+    """
+
     if torch.cuda.is_available():
         device = 'cuda'
     elif torch.backends.mps.is_available():
@@ -31,7 +93,43 @@ def Train_Network_gpu(Par,Obs,batch_size=512, **kwargs):
 
     return NPE_Network
 
-def Infer(Network,Obs,samples=500,batch_size=32):
+def Infer(Network, Obs, samples=500, batch_size=32, show_tqdm=True):
+    """
+    Generate posterior samples for a collection of observations.
+
+    Observations are processed in batches and passed to the trained posterior
+    network using ``sample_batched``. GPU acceleration is used when available,
+    with CUDA preferred over Apple's MPS backend. Posterior samples are moved
+    back to the CPU before being returned.
+
+    Parameters
+    ----------
+    Network : object
+        Trained posterior network supporting ``to`` and ``sample_batched``.
+
+    Obs : torch.Tensor
+        Observations for which posterior samples should be generated. The
+        first dimension corresponds to independent observations.
+
+    samples : int, optional
+        Number of posterior samples generated for each observation.
+        Default is 500.
+
+    batch_size : int, optional
+        Number of observations processed simultaneously during inference.
+        Default is 32.
+
+    show_tqdm : bool, optional
+        If ``True``, display a progress bar while processing observation
+        batches. Default is ``True``.
+
+    Returns
+    -------
+    p_samples : torch.Tensor
+        Posterior samples for all observations. The resulting tensor has shape
+        ``(samples, n_observations, n_parameters)``.
+
+    """
 
     if torch.cuda.is_available():
         device = 'cuda'
@@ -40,20 +138,96 @@ def Infer(Network,Obs,samples=500,batch_size=32):
     else:
         print ("No GPU acceleration found, will resort to CPU version")
         device = 'cpu'
-
     p_samples = []
     Obs_mps = Obs.to(device)
     Network.to(device)
-    for i in tqdm.tqdm(range(0, len(Obs_mps), batch_size),position=0):
-        O_batch = Obs_mps[i:i + batch_size]
-        s = Network.sample_batched((samples,), O_batch,show_progress_bars=False)
-        p_samples.append(s.cpu())
+    if(show_tqdm):
+        for i in tqdm.tqdm(range(0, len(Obs_mps), batch_size),position=0):
+            O_batch = Obs_mps[i:i + batch_size]
+            s = Network.sample_batched((samples,), O_batch,show_progress_bars=False)
+            p_samples.append(s.cpu())
+    else:
+        for i in range(0, len(Obs_mps),batch_size):
+            O_batch = Obs_mps[i:i + batch_size]
+            s = Network.sample_batched((samples,), O_batch,show_progress_bars=False)
+            p_samples.append(s.cpu())        
     p_samples = torch.cat(p_samples, dim=1)
     Network.to('cpu')
 
     return p_samples
 
-def InferFromVolume(Network,Obs,mask,batch_size = 32, return_dist = False, filename = None,):
+def Infer_from_volume(Network,Obs,mask = None,batch_size = 32,samples=500, return_dist = False, filename = None,save=False):
+    """
+    Perform posterior inference on a spatial volume of observations.
+
+    The input volume is optionally restricted using a boolean mask. Valid
+    voxels are flattened, posterior inference is performed in batches, and
+    the resulting estimates are reshaped back into the original spatial
+    dimensions.
+
+    By default, the posterior mean is returned for each voxel. If
+    ``return_dist=True``, the full posterior sample distribution is retained.
+
+    Parameters
+    ----------
+    Network : object
+        Trained posterior network used for inference.
+
+    Obs : np.ndarray
+        Spatial array of observations. The final dimension contains the
+        observation or signal features, while all preceding dimensions define
+        the spatial volume.
+
+    mask : np.ndarray of bool or None, optional
+        Boolean mask defining which voxels should undergo inference. Its shape
+        must match ``Obs.shape[:-1]``. If ``None``, all voxels are included.
+        Default is ``None``.
+
+    batch_size : int, optional
+        Number of voxels processed simultaneously during posterior inference.
+        Default is 32.
+
+    samples : int, optional
+        Number of posterior samples generated for each voxel.
+        Default is 500.
+
+    return_dist : bool, optional
+        If ``False``, return the posterior mean for each voxel. If ``True``,
+        retain the complete posterior sample distribution. Default is
+        ``False``.
+
+    filename : str or None, optional
+        Output filename used when saving the posterior result. If ``None``,
+        a filename is generated automatically by the saving function.
+        Default is ``None``.
+
+    save : bool, optional
+        If ``True``, save the resulting posterior volume to disk.
+        Default is ``False``.
+
+    Returns
+    -------
+    output : np.ndarray
+        Spatial posterior result.
+
+        If ``return_dist=False``, the shape is
+        ``mask.shape + (n_parameters,)``.
+
+        If ``return_dist=True``, the shape is
+        ``mask.shape + (samples, n_parameters)``.
+
+        Voxels outside the mask are filled with ``NaN``.
+
+    Notes
+    -----
+    When no mask is provided, all spatial locations are included.
+
+    Posterior inference is performed using ``Infer`` with the requested number
+    of posterior samples and the specified batch size.
+    """
+
+    if mask is None:
+        mask = np.ones_like(Obs[...,0]).astype(bool)
     Obs_mask = Obs[mask]                     
     Obs_mask = torch.from_numpy(Obs_mask).float()
     print('Starting inference....')
@@ -61,7 +235,6 @@ def InferFromVolume(Network,Obs,mask,batch_size = 32, return_dist = False, filen
     print('Reshaping result')
     samples_np = samples.numpy()
     N_samples, N_voxels, N_params = samples_np.shape
-
     if return_dist:
         out_shape = mask.shape + (N_samples, N_params)
         output = np.full(out_shape, np.nan, dtype=np.float32)
@@ -73,6 +246,6 @@ def InferFromVolume(Network,Obs,mask,batch_size = 32, return_dist = False, filen
         output[mask] = mean_np
         
     print("Saving...")
-    Helpers.save_posterior(output, filename=filename,return_dist = return_dist)
+    if save: Helpers.save_posterior(output, filename=filename,return_dist = return_dist)
     
     return output
