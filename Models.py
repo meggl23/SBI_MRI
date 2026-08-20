@@ -109,7 +109,7 @@ class Compartment(ABC):
         
     @abstractmethod
     def build_parameter_list(self):
-         """
+        """
         Construct the list of parameters used by the compartment.
 
         Returns
