@@ -107,25 +107,24 @@ def ParameterEval_TS(Model, validation_snr, k_fold=5, max_samples=100_000, test_
     test_rng = np.random.default_rng(2026)
 
     Params_test, Signals_test = Model.sample_and_simulation(
-        test_samples, parallel=True, Save=False, rng=test_rng, custom_snr=validation_snr)
+        test_samples, parallel=True, rng=test_rng, custom_snr=validation_snr)
 
-    Par_test, Obs_test, _, _ = Helpers.PrepData(Params_test, Signals_test, Model.parameter_list,Verbose=False)
+    Par_test, Obs_test, _, _ = Helpers.Prep_data(Params_test, Signals_test, Model.parameter_list,Verbose=False)
 
     kFoldMetrics = []
-    print('here')
     for fold in tqdm.tqdm(range(k_fold),desc='Fold Number:',file=sys.stdout):
         train_rng = np.random.default_rng(42 + fold)
 
         Params_train, Signals_train = Model.sample_and_simulation(
-            max_samples, parallel=True, Save=False, rng=train_rng, custom_snr=Model.snr)
+            max_samples, parallel=True, rng=train_rng, custom_snr=Model.snr)
 
-        Par_train, Obs_train, Names, _ = Helpers.PrepData(Params_train, Signals_train, Model.parameter_list,Verbose=False)
+        Par_train, Obs_train, Names, _ = Helpers.Prep_data(Params_train, Signals_train, Model.parameter_list,Verbose=False)
 
         AllMetrics = {}
 
         for n_samples in N:
             network = SBI.Train_Network_gpu(
-                Par_train[:n_samples], Obs_train[:n_samples],
+                Par_train[:n_samples], Obs_train[:n_samples],save=False,
                 max_num_epochs=maximum_training_epochs, stop_after_epochs=maximum_training_epochs)
             print('\n')
             GuessParams = SBI.Infer(
@@ -241,15 +240,15 @@ def ParameterEval_PS(Model, validation_snr, k_fold=5, max_samples=1000, training
 
     # Generate one shared test set
     test_rng = np.random.default_rng(2026)
-    Params_test, Signals_test = Model.sample_and_simulation(test_samples, parallel=True, Save=False, rng=test_rng, custom_snr=validation_snr)
-    Par_test, Obs_test, _, _ = Helpers.PrepData(Params_test, Signals_test, Model.parameter_list,Verbose=False)
-    print(validation_snr)
+    Params_test, Signals_test = Model.sample_and_simulation(test_samples, parallel=True, rng=test_rng, custom_snr=validation_snr)
+    Par_test, Obs_test, _, _ = Helpers.Prep_data(Params_test, Signals_test, Model.parameter_list,Verbose=False)
+
     # Generate the training set and train one network
     train_rng = np.random.default_rng(45)
-    Params_train, Signals_train = Model.sample_and_simulation(training_samples, parallel=True, Save=False, rng=train_rng, custom_snr=Model.snr)
-    Par_train, Obs_train, Names, _ = Helpers.PrepData(Params_train, Signals_train, Model.parameter_list,Verbose=False)
+    Params_train, Signals_train = Model.sample_and_simulation(training_samples, parallel=True,rng=train_rng, custom_snr=Model.snr)
+    Par_train, Obs_train, Names, _ = Helpers.Prep_data(Params_train, Signals_train, Model.parameter_list,Verbose=False)
 
-    Network = SBI.Train_Network_gpu(Par_train, Obs_train)
+    Network = SBI.Train_Network_gpu(Par_train, Obs_train,save=False)
 
     N = np.unique(np.geomspace(10, max_samples, fidelity).astype(int))
     kFoldMetrics = []

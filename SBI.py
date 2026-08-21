@@ -5,9 +5,11 @@ import tqdm
 import numpy as np
 
 import Helpers
+from datetime import datetime
+import dill as pickle
 
 
-def Train_Network(Par, Obs, **kwargs):
+def Train_Network(Par, Obs,save=True, **kwargs):
     """
     Train a neural posterior estimator using simulation-based inference.
 
@@ -37,9 +39,11 @@ def Train_Network(Par, Obs, **kwargs):
     inference = inference.append_simulations(Par, Obs)
     density_estimator = inference.train(**kwargs) 
     NPE_Network = inference.build_posterior(density_estimator)
+
+    if save: Save_Network(NPE_Network,Par.shape[0])
     return NPE_Network
 
-def Train_Network_gpu(Par, Obs, batch_size=512, **kwargs):
+def Train_Network_gpu(Par, Obs, batch_size=512,save=True, **kwargs):
     """
     Train a neural posterior estimator using available GPU acceleration.
 
@@ -89,9 +93,43 @@ def Train_Network_gpu(Par, Obs, batch_size=512, **kwargs):
     density_estimator = inference.train(training_batch_size = batch_size,**kwargs) 
     NPE_Network = inference.build_posterior(density_estimator)
     NPE_Network.to(device='cpu')
-        
+
+    if save: Save_Network(NPE_Network,Par.shape[0])
 
     return NPE_Network
+
+def Save_Network(NPE_Network,N):
+
+    def format_n(n):
+        if n >= 1_000_000:
+            return f"{n / 1_000_000:g}M"
+        if n >= 1_000:
+            return f"{n / 1_000:g}k"
+        return str(n)
+
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M")
+    filename = f"Network_{format_n(N)}_{timestamp}"
+
+    filename= Helpers.make_data_folder(filename)
+
+    with open(f"{filename}.pickle", "wb") as handle:
+        pickle.dump(NPE_Network, handle)
+
+    print(f"Network saved as '{filename}.pickle'")
+
+def Load_Network(filename):
+
+    if "saved_data/" not in filename: filename= Helpers.make_data_folder(filename)
+
+    filename = Path(filename)
+
+    if not filename.is_file():
+        raise FileNotFoundError(
+            f"Network file does not exist: {filename.resolve()}"
+        )
+
+    with open(filename, "rb") as handle:
+        posterior = pickle.load(handle)
 
 def Infer(Network, Obs, samples=500, batch_size=32, show_tqdm=True):
     """

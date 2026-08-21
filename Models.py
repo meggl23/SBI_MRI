@@ -586,14 +586,10 @@ class DTI(Compartment):
         return Q
 
     @staticmethod
-    def MD_FA(tensors, clip_negative=False, eps=1e-5):
+    def EvaluateTensor(tensors, clip_negative=False, eps=1e-5):
         """
-        Compute mean diffusivity and fractional anisotropy from diffusion
-        tensors.
-
-        Input tensors may be supplied either in flattened six-component form
-        or as full symmetric 3 × 3 matrices. Arbitrary leading spatial
-        dimensions are supported.
+        Compute mean diffusivity, fractional anisotropy, eigenvalues, and
+        eigenvectors from diffusion tensors.
 
         Parameters
         ----------
@@ -611,27 +607,22 @@ class DTI(Compartment):
         Returns
         -------
         MD_FA_values : np.ndarray
-            Array containing mean diffusivity and fractional anisotropy along
-            the final axis. The output shape is ``original_shape + (2,)``,
-            where ``[..., 0]`` contains MD and ``[..., 1]`` contains FA.
+            Array with shape ``original_shape + (2,)``.
+            ``[..., 0]`` contains MD and ``[..., 1]`` contains FA.
+
+        eigenvalues : np.ndarray
+            Eigenvalues with shape ``original_shape + (3,)``.
+
+        eigenvectors : np.ndarray
+            Eigenvectors with shape ``original_shape + (3, 3)``.
+            Eigenvectors are stored column-wise, following
+            ``np.linalg.eigh`` conventions.
 
         Raises
         ------
         ValueError
             If the input does not have shape ``(..., 6)`` or
             ``(..., 3, 3)``.
-
-        Notes
-        -----
-        Mean diffusivity is calculated as the mean of the three tensor
-        eigenvalues.
-
-        Fractional anisotropy is calculated from the eigenvalues as
-
-        ``sqrt(3 * sum((lambda_i - MD)^2) / (2 * sum(lambda_i^2)))``.
-
-        Tensors containing non-finite values, or tensors for which the
-        eigendecomposition fails, are assigned ``MD = 0`` and ``FA = 0``.
         """
 
         tensors = np.asarray(tensors)
@@ -658,27 +649,32 @@ class DTI(Compartment):
                 "Expected shape (..., 6) or (..., 3, 3)."
             )
 
-        # Flatten spatial dimensions so tensors has shape (N, 3, 3)
+        # Flatten spatial dimensions
         flat_tensors = tensors.reshape(-1, 3, 3)
+        n_tensors = len(flat_tensors)
 
-        # Default everything to zero.
-        MD = np.zeros(len(flat_tensors), dtype=float)
-        FA = np.zeros(len(flat_tensors), dtype=float)
+        # Default everything to zero
+        MD = np.zeros(n_tensors, dtype=float)
+        FA = np.zeros(n_tensors, dtype=float)
+
+        eigenvalues = np.zeros((n_tensors, 3), dtype=float)
+        eigenvectors = np.zeros((n_tensors, 3, 3), dtype=float)
 
         for i, tensor in enumerate(flat_tensors):
 
-            # Invalid tensor -> MD = FA = 0
+            # Invalid tensor -> everything remains zero
             if not np.all(np.isfinite(tensor)):
                 continue
 
             try:
-                evals = np.linalg.eigvalsh(tensor)
+                evals, evecs = np.linalg.eigh(tensor)
             except np.linalg.LinAlgError:
-                # Eigenvalues did not converge -> MD = FA = 0
                 continue
 
-            # Just in case eigvalsh returns something invalid
-            if not np.all(np.isfinite(evals)):
+            if (
+                not np.all(np.isfinite(evals))
+                or not np.all(np.isfinite(evecs))
+            ):
                 continue
 
             if clip_negative:
@@ -690,15 +686,22 @@ class DTI(Compartment):
             numer = 3 * np.sum((evals - md)**2)
 
             MD[i] = md
+            eigenvalues[i] = evals
+            eigenvectors[i] = evecs
 
             if denom > 0:
                 FA[i] = np.sqrt(numer / (2 * denom))
 
-        # Restore original spatial dimensions
+        # Restore original dimensions
         MD = MD.reshape(original_shape)
         FA = FA.reshape(original_shape)
 
-        return np.stack((MD, FA), axis=-1)
+        eigenvalues = eigenvalues.reshape(original_shape + (3,))
+        eigenvectors = eigenvectors.reshape(original_shape + (3, 3))
+
+        MD_FA_values = np.stack((MD, FA), axis=-1)
+
+        return MD_FA_values, eigenvalues, eigenvectors
 
 #----------------Stick Compartment---------------------
 class Sticks(Compartment):
@@ -1832,11 +1835,11 @@ class Model:
         parameter_list = np.asarray(parameter_list)
         for key, value in self.compartments.items():
             rel_pars = [
-                Helpers.get_parameter_index(parameter_list, f"{key}_{name}")
+                self._get_parameter_index(f"{key}_{name}")
                 for name in value.parameter_names
             ]
             
-            rel_frac = Helpers.get_parameter_index(parameter_list, f"{key}_f")
+            rel_frac = self._get_parameter_index(f"{key}_f")
             S += parameters[:,rel_frac,None]*value.simulation(parameters[:,rel_pars])
         if rng is None:
             rng = np.random.default_rng()
@@ -1847,7 +1850,7 @@ class Model:
 
         return S
 
-    def sample_and_simulation(self,N,custom_snr=0,parallel=False,Save = True,filename = None,rng = None, n_jobs = -1):
+    def sample_and_simulation(self,N,custom_snr=0,parallel=False,save = False,filename = None,rng = None, n_jobs = -1):
         """
         Sample random model parameters and simulate their corresponding signals.
 
@@ -1874,9 +1877,9 @@ class Model:
             If ``True``, compartment simulations are performed using each
             compartment's parallel simulation method. Default is ``False``.
 
-        Save : bool, optional
+        save : bool, optional
             If ``True``, save the generated parameters and signals to an HDF5
-            file. Default is ``True``.
+            file. Default is ``False``.
 
         filename : str or None, optional
             Filename used when saving. If ``None``, the saving function
@@ -1910,7 +1913,7 @@ class Model:
         Compartment fractions are sampled jointly from a symmetric Dirichlet
         distribution, ensuring that they are non-negative and sum to one.
 
-        If ``Save=True``, both the processed signal and the raw noiseless
+        If ``save=True``, both the processed signal and the raw noiseless
         signal are passed to ``Helpers.save_h5``.
         """
         if rng is None:
@@ -1924,13 +1927,17 @@ class Model:
         S_raw = np.zeros((N, n_meas))
         fracs = rng.dirichlet(alpha=np.ones(n_comp), size=N)
         all_params = [fracs]
-        if(parallel):
-            for i, compartment in tqdm.tqdm(enumerate(self.compartments.values()),position=0,desc="Simulating compartments"):
+        pbar = tqdm.tqdm(enumerate(self.compartments.items()),position=0)
+
+        if parallel:
+            for i, (name, compartment) in pbar:
+                pbar.set_description(f"Simulating {name}")
                 params, c_sim = compartment.sample_and_simulate_parallel(N,rng=rng,n_jobs=n_jobs)
                 all_params.append(params)
                 S_raw += fracs[:, i, None] * c_sim
         else:
-            for i, compartment in tqdm.tqdm(enumerate(self.compartments.values()),position=0,desc="Simulating compartments"):
+            for i, (name, compartment) in pbar:
+                pbar.set_description(f"Simulating {name}")
                 params, c_sim = compartment.sample_and_simulate(N,rng=rng)
                 all_params.append(params)
                 S_raw += fracs[:, i, None] * c_sim
@@ -1945,7 +1952,7 @@ class Model:
             S = self._add_noise(S_raw, snr,rng)
             S = self._normalize(S)
         
-        if Save: Helpers.save_h5(filename, Params, S, S_raw, snr,self.parameter_list,self.compartments)
+        if save: Helpers.save_h5(filename, Params, S, S_raw, snr,self.parameter_list,self.compartments)
 
         return  Params, S
 

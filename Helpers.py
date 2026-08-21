@@ -9,8 +9,23 @@ import numpy as np
 import matplotlib.pyplot as plt
 import ipywidgets as widgets
 from IPython.display import display
+from pathlib import Path
 
 plt.style.use("seaborn-v0_8")
+
+def make_data_folder(filename):
+    """
+
+    Ensure the data directory exists and return the filename inside it.
+
+    """
+
+    data_dir = Path("saved_data")
+
+    data_dir.mkdir(parents=True, exist_ok=True)
+
+    return data_dir / filename
+
 
 def save_h5(filename, Params, S, S_raw, snr, parameter_list, compartments):
     """
@@ -74,6 +89,7 @@ def save_h5(filename, Params, S, S_raw, snr, parameter_list, compartments):
         timestamp = datetime.now().strftime("%Y%m%d_%H%M")
         filename = f"{model_name}_{timestamp}.h5"
 
+    filename = make_data_folder(filename)
     with h5py.File(filename, "w") as f:
         f.create_dataset("Params", data=Params)
         f.create_dataset("S", data=S)
@@ -86,6 +102,7 @@ def save_h5(filename, Params, S, S_raw, snr, parameter_list, compartments):
         f.attrs["snr"] = -1 if snr is None else snr
         f.attrs["snr_is_none"] = snr is None
     print(f"File was saved as {filename}!")
+
 
 def read_h5(filename):
     """
@@ -113,8 +130,21 @@ def read_h5(filename):
     snr : float or None
         Stored signal-to-noise ratio. Returns ``None`` if the original SNR
         was stored as ``None``.
+
+    Raises
+    ------
+    FileNotFoundError
+        If the specified HDF5 file does not exist.
     """
 
+    if "saved_data/" not in filename: filename= make_data_folder(filename)
+
+    filename = Path(filename)
+
+    if not filename.is_file():
+        raise FileNotFoundError(
+            f"HDF5 file does not exist: {filename.resolve()}"
+        )
 
     with h5py.File(filename, "r") as f:
         Params = f["Params"][:]
@@ -129,7 +159,6 @@ def read_h5(filename):
         snr = None if f.attrs["snr_is_none"] else f.attrs["snr"]
 
     return Params, S, S_raw, parameter_names, snr
-
 def histogram_mode(data, bins=50):
     """
     Estimate the mode of one-dimensional data using a histogram.
@@ -258,6 +287,8 @@ def save_posterior(output, filename=None, compression_level=4, return_dist=False
         if( not return_dist): timestamp = timestamp + ('_mean')
         filename = f"Posterior_{timestamp}.h5"
 
+    filename= make_data_folder(filename)
+
     with h5py.File(filename, "w") as f:
         f.create_dataset(
             "posterior",
@@ -284,6 +315,15 @@ def load_posterior(filename):
     output : np.ndarray
         Stored posterior samples or posterior summary array.
     """
+    if "saved_data/" not in filename: filename= make_data_folder(filename)
+
+    filename = Path(filename)
+
+    if not filename.is_file():
+        raise FileNotFoundError(
+            f"Posterior data file does not exist: {filename.resolve()}"
+        )
+
 
     with h5py.File(filename, "r") as f:
         output = f["posterior"][:]
@@ -560,7 +600,6 @@ def Widget_parameter_map(Values,Model,parameter,view='ax',cmap='hot',data_range=
     Val = parameter_selector(Values,Model,parameter)
 
     if(len(data_range) == 0): data_range = [np.nanmin(Val),np.nanmax(Val)]
-    print(data_range)
 
     # Decide which axis the slider should iterate over
     if view == 'sag':
@@ -660,7 +699,8 @@ def save_figure(fig, parameter, filename=None):
         timestamp = datetime.now().strftime("%Y%m%d_%H%M")
         filename = f"{parameter}_{timestamp}"
 
-    fig.savefig(filename+'.pdf',format='pdf',transparent=True,bbox_inches='tight')
+    filename= make_data_folder(filename)
+    fig.savefig(f"{filename}.pdf",format='pdf',transparent=True,bbox_inches='tight')
 
     print(f"Figure saved to '{filename}.pdf'")
 
