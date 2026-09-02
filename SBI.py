@@ -131,7 +131,7 @@ def Load_Network(filename):
     with open(filename, "rb") as handle:
         posterior = pickle.load(handle)
 
-def Infer(Network, Obs, samples=500, batch_size=32, show_tqdm=True):
+def Infer(Network, Obs, Num_samples=500, batch_size=32, show_tqdm=True):
     """
     Generate posterior samples for a collection of observations.
 
@@ -149,7 +149,7 @@ def Infer(Network, Obs, samples=500, batch_size=32, show_tqdm=True):
         Observations for which posterior samples should be generated. The
         first dimension corresponds to independent observations.
 
-    samples : int, optional
+    Num_samples : int, optional
         Number of posterior samples generated for each observation.
         Default is 500.
 
@@ -182,19 +182,19 @@ def Infer(Network, Obs, samples=500, batch_size=32, show_tqdm=True):
     if(show_tqdm):
         for i in tqdm.tqdm(range(0, len(Obs_mps), batch_size),position=0):
             O_batch = Obs_mps[i:i + batch_size]
-            s = Network.sample_batched((samples,), O_batch,show_progress_bars=False)
+            s = Network.sample_batched((Num_samples,), O_batch,show_progress_bars=False)
             p_samples.append(s.cpu())
     else:
         for i in range(0, len(Obs_mps),batch_size):
             O_batch = Obs_mps[i:i + batch_size]
-            s = Network.sample_batched((samples,), O_batch,show_progress_bars=False)
+            s = Network.sample_batched((Num_samples,), O_batch,show_progress_bars=False)
             p_samples.append(s.cpu())        
     p_samples = torch.cat(p_samples, dim=1)
     Network.to('cpu')
 
     return p_samples
 
-def Infer_from_volume(Network,Obs,mask = None,batch_size = 32,samples=500, return_dist = False, filename = None,save=False):
+def Infer_from_volume(Network,Obs,mask = None,batch_size = 32, Num_samples=500, return_dist = False, filename = None,save=False):
     """
     Perform posterior inference on a spatial volume of observations.
 
@@ -269,7 +269,7 @@ def Infer_from_volume(Network,Obs,mask = None,batch_size = 32,samples=500, retur
     Obs_mask = Obs[mask]                     
     Obs_mask = torch.from_numpy(Obs_mask).float()
     print('Starting inference....')
-    samples = Infer(Network,Obs_mask, batch_size=batch_size)
+    samples = Infer(Network,Obs_mask, batch_size=batch_size,Num_samples = Num_samples)
     print('Reshaping result')
     samples_np = samples.numpy()
     N_samples, N_voxels, N_params = samples_np.shape

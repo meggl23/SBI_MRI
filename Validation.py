@@ -128,7 +128,7 @@ def ParameterEval_TS(Model, validation_snr, k_fold=5, max_samples=100_000, test_
                 max_num_epochs=maximum_training_epochs, stop_after_epochs=maximum_training_epochs)
             print('\n')
             GuessParams = SBI.Infer(
-                network, Obs_test, samples=posterior_samples,show_tqdm=False)
+                network, Obs_test, Num_Samples=posterior_samples,show_tqdm=False)
 
             Metrics = Performance(
                 Par_test, GuessParams, Model)
@@ -257,7 +257,7 @@ def ParameterEval_PS(Model, validation_snr, k_fold=5, max_samples=1000, training
         AllMetrics = {}
 
         for posterior_samples in N:
-            GuessParams = SBI.Infer(Network, Obs_test, samples=posterior_samples,show_tqdm=False)
+            GuessParams = SBI.Infer(Network, Obs_test, Num_Samples=posterior_samples,show_tqdm=False)
             Metrics = Performance(Par_test, GuessParams, Model)
             for key, value in Metrics.items():
                 AllMetrics.setdefault(key, []).append(value)
