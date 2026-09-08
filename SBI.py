@@ -132,6 +132,8 @@ def Load_Network(filename):
     with open(filename, "rb") as handle:
         posterior = pickle.load(handle)
 
+    return posterior
+
 def Infer(Network, Obs, Num_samples=500, batch_size=32, show_tqdm=True):
     """
     Generate posterior samples for a collection of observations.
