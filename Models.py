@@ -1612,11 +1612,16 @@ class Model:
     snr : float or None
         Default signal-to-noise ratio used when simulating noisy data.
     """
-    def __init__(self, gtab):
+    def __init__(self, gtab,Normalize = False, S0_min = 0, S0_max = 2_000):
         self.gtab = gtab
         self.compartments = {}
         self.parameter_list = []
         self.snr = None
+        self.Unnormalize = False
+        if(not Normalize):
+            self.Unnormalize = True
+            self.S0_range = [S0_min, S0_max]
+
 
     def _set_default_SNR(self,SNR):
         """
@@ -1687,6 +1692,8 @@ class Model:
                     for name, compartment in self.compartments.items()
                     for p in compartment.parameter_names
                 ]
+        if(self.Unnormalize):
+            self.parameter_list += ["S0"]
     @property
     def _get_compartments(self):
         """
@@ -1783,7 +1790,7 @@ class Model:
 
         return matches[0]
 
-    def simulation(self,parameters,parameter_list = None,custom_snr = 0,rng = None):
+    def simulation(self,parameters,S0 = None,parameter_list = None,custom_snr = 0,rng = None):
         """
         Simulate signals from supplied multi-compartment model parameters.
 
@@ -1827,12 +1834,12 @@ class Model:
         the resulting signals are normalized using ``_normalize``.
         """
 
-        if parameter_list is None: parameter_list = self.parameter_list
+        if rng is None: rng = np.random.default_rng()
+
         N = parameters.shape[0]
         n_meas = len(self.gtab.bvals)
         S = np.zeros((N, n_meas))
 
-        parameter_list = np.asarray(parameter_list)
         for key, value in self.compartments.items():
             rel_pars = [
                 self._get_parameter_index(f"{key}_{name}")
@@ -1841,12 +1848,20 @@ class Model:
             
             rel_frac = self._get_parameter_index(f"{key}_f")
             S += parameters[:,rel_frac,None]*value.simulation(parameters[:,rel_pars])
-        if rng is None:
-            rng = np.random.default_rng()
+
         snr = self.snr if custom_snr == 0 else custom_snr
+
+
+        if(self.Unnormalise):
+            if S0 == None:
+                print("You didn't provide an S0 set, will set it to 1")
+                S0 = np.ones(parameters.shape[0])
+            S = S0[:,None] * S
+
         if snr is not None:
-            S = self._add_noise(S, snr,rng)
-            S = self._normalize(S)
+            S = self._add_noise(S,S0, snr,rng)
+        
+        if not self.Unnormalise: S = self._normalize(S)
 
         return S
 
@@ -1916,6 +1931,7 @@ class Model:
         If ``save=True``, both the processed signal and the raw noiseless
         signal are passed to ``Helpers.save_h5``.
         """
+
         if rng is None:
             rng = np.random.default_rng()
         if len(self.compartments) == 0:
@@ -1946,17 +1962,32 @@ class Model:
     
         snr = self.snr if custom_snr == 0 else custom_snr
 
-        if snr is None:
-            S = S_raw
+        if self.Unnormalize: 
+            S0Rand = self._sample_S0(N,rng)
+            Params = np.hstack([Params, S0Rand[:, None]])
         else:
-            S = self._add_noise(S_raw, snr,rng)
+            S0Rand = np.ones(N)
+
+        S = S0Rand[:,None] * S_raw
+
+        if snr is None: 
+            pass
+        else:
+            S = self._add_noise(S,S0Rand, snr,rng)
+
+        if(not self.Unnormalize):
             S = self._normalize(S)
         
         if save: Helpers.save_h5(filename, Params, S, S_raw, snr,self.parameter_list,self.compartments)
 
-        return  Params, S
+        return Params, S
 
-    def _add_noise(self, S, snr,rng):
+
+    def _sample_S0(self,N,rng):
+
+        return rng.uniform(*self.S0_range, size=N)
+
+    def _add_noise(self, S,S0, snr,rng):
         """
         Add Rician noise to simulated magnitude signals.
 
@@ -1983,7 +2014,7 @@ class Model:
         """
         if rng is None:
             rng = np.random.default_rng()
-        sigma = 1.0 / snr
+        sigma = S0[:,None] / snr
     
         noise1 = rng.normal(0, sigma, size=S.shape)
         noise2 = rng.normal(0, sigma, size=S.shape)

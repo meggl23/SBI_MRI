@@ -315,7 +315,7 @@ def load_posterior(filename):
     output : np.ndarray
         Stored posterior samples or posterior summary array.
     """
-    if "saved_data/" not in filename: filename= make_data_folder(filename)
+    if "saved_data/" not in filename: filename = make_data_folder(filename)
 
     filename = Path(filename)
 
